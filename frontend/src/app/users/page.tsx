@@ -114,7 +114,7 @@ export default function UsersPage() {
                 <td className="p-3 font-mono text-gray-600">{u.password || '******'}</td>
                 <td className="p-3">{u.role}</td>
                 <td className="p-3">
-                  {(user.role === 'Superadmin' || user.role === 'Admin') ? (
+                  {(user.role === 'Superadmin' || (user.role === 'Admin' && u.role !== 'Superadmin' && u.role !== 'Admin')) ? (
                     <button onClick={() => handleDelete(u.id)} className="text-red-600 hover:underline">Delete</button>
                   ) : (
                     <span className="text-gray-400">No access</span>
