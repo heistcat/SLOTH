@@ -26,7 +26,7 @@ export default function Accounting() {
           </thead>
           <tbody>
             {mockAccountingData.map(row => (
-              <tr key={row.id} className="border-b hover:bg-gray-50 whitespace-nowrap">
+              <tr key={row.id} className="border-b hover:bg-blue-100 cursor-pointer transition-colors duration-150 whitespace-nowrap">
                 <td className="p-2">{row.id}</td>
                 <td className="p-2">{row.load}</td>
                 <td className="p-2">{row.status}</td>
