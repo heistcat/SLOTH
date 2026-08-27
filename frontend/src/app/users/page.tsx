@@ -9,6 +9,7 @@ export default function UsersPage() {
   const router = useRouter();
   const [users, setUsers] = useState<any[]>([]);
   const [username, setUsername] = useState('');
+  const [password, setPassword] = useState('');
   
   // Determine allowed roles to create
   let allowedRolesToCreate: string[] = [];
@@ -44,11 +45,12 @@ export default function UsersPage() {
     const res = await fetch('/api/users', {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ username, role })
+      body: JSON.stringify({ username, password, role })
     });
     const newUser = await res.json();
     setUsers([...users, newUser]);
     setUsername('');
+    setPassword('');
   };
 
   const handleDelete = async (id: string) => {
@@ -74,6 +76,14 @@ export default function UsersPage() {
             className="border p-2 rounded flex-1 text-black bg-white" 
             required 
           />
+          <input 
+            type="text" 
+            placeholder="Password" 
+            value={password} 
+            onChange={(e) => setPassword(e.target.value)} 
+            className="border p-2 rounded flex-1 text-black bg-white" 
+            required 
+          />
           <select value={role} onChange={(e) => setRole(e.target.value)} className="border p-2 rounded flex-1 text-black bg-white">
             {allowedRolesToCreate.map(r => <option key={r} value={r}>{r}</option>)}
           </select>
@@ -85,28 +95,29 @@ export default function UsersPage() {
         </div>
       )}
 
-      <div className="bg-white rounded shadow overflow-x-auto">
+      <div className="bg-white rounded shadow overflow-x-auto text-sm">
         <table className="w-full text-left border-collapse">
           <thead>
             <tr className="bg-gray-200 border-b">
               <th className="p-3">ID</th>
               <th className="p-3">Username</th>
+              <th className="p-3">Password</th>
               <th className="p-3">Role</th>
               <th className="p-3">Actions</th>
             </tr>
           </thead>
           <tbody>
             {users.map(u => (
-              <tr key={u.id} className="border-b hover:bg-blue-100 cursor-pointer transition-colors duration-150">
+              <tr key={u.id} className="border-b hover:bg-blue-100 cursor-pointer transition-colors duration-150 text-black">
                 <td className="p-3">{u.id}</td>
-                <td className="p-3">{u.username}</td>
+                <td className="p-3 font-semibold">{u.username}</td>
+                <td className="p-3 font-mono text-gray-600">{u.password || '******'}</td>
                 <td className="p-3">{u.role}</td>
                 <td className="p-3">
-                  {(user.role === 'Superadmin' || user.role === 'Admin') && (
+                  {(user.role === 'Superadmin' || user.role === 'Admin') ? (
                     <button onClick={() => handleDelete(u.id)} className="text-red-600 hover:underline">Delete</button>
-                  )}
-                  {(user.role !== 'Superadmin' && user.role !== 'Admin') && (
-                    <span className="text-gray-400 text-sm">No access</span>
+                  ) : (
+                    <span className="text-gray-400">No access</span>
                   )}
                 </td>
               </tr>

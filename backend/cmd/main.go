@@ -13,13 +13,15 @@ import (
 type User struct {
 	ID       string `json:"id"`
 	Username string `json:"username"`
+	Password string `json:"password"`
 	Role     string `json:"role"`
 }
 
 var (
 	mockUsers = []User{
-		{ID: "1", Username: "admin", Role: "Superadmin"},
-		{ID: "2", Username: "dispatcher_john", Role: "Dispatcher"},
+		{ID: "0", Username: "0000", Password: "0000", Role: "Superadmin"},
+		{ID: "1", Username: "admin", Password: "password123", Role: "Admin"},
+		{ID: "2", Username: "dispatcher_john", Password: "password123", Role: "Dispatcher"},
 	}
 	usersMu sync.Mutex
 )
@@ -41,6 +43,42 @@ func main() {
 		w.Header().Set("Content-Type", "application/json")
 		w.WriteHeader(http.StatusOK)
 		w.Write([]byte(`{"status":"ok", "message": "Backend is running!"}`))
+	})
+
+	http.HandleFunc("/api/login", func(w http.ResponseWriter, r *http.Request) {
+		enableCors(&w)
+		if r.Method == "OPTIONS" {
+			w.WriteHeader(http.StatusOK)
+			return
+		}
+
+		if r.Method != "POST" {
+			http.Error(w, "Method not allowed", http.StatusMethodNotAllowed)
+			return
+		}
+
+		var creds struct {
+			Username string `json:"username"`
+			Password string `json:"password"`
+		}
+
+		if err := json.NewDecoder(r.Body).Decode(&creds); err != nil {
+			http.Error(w, err.Error(), http.StatusBadRequest)
+			return
+		}
+
+		usersMu.Lock()
+		defer usersMu.Unlock()
+
+		for _, u := range mockUsers {
+			if u.Username == creds.Username && u.Password == creds.Password {
+				w.Header().Set("Content-Type", "application/json")
+				json.NewEncoder(w).Encode(u)
+				return
+			}
+		}
+
+		http.Error(w, "Invalid credentials", http.StatusUnauthorized)
 	})
 
 	http.HandleFunc("/api/users", func(w http.ResponseWriter, r *http.Request) {
