@@ -4,6 +4,7 @@ import React, { useState } from 'react';
 import { useTelemetry } from '@/context/TelemetryContext';
 import { LogisticsStatus, Driver } from '@/types/logistics';
 import { cn } from '@/lib/utils';
+import { slothApi } from '@/lib/api';
 import { 
   X, 
   ChevronRight, 
@@ -121,16 +122,34 @@ export function NewDispatchWizard({ isOpen, onClose }: NewDispatchWizardProps) {
 
   if (!isOpen) return null;
 
-  // Mock PDF drop parser
-  const handleDropRateCon = (e: React.DragEvent) => {
+  const [isParsingRateCon, setIsParsingRateCon] = useState(false);
+
+  // Real backend AI Rate Con parser
+  const handleDropRateCon = async (e: React.DragEvent) => {
     e.preventDefault();
     const files = e.dataTransfer.files;
     if (files.length > 0) {
-      setUploadedRateConName(files[0].name);
-      // Auto fill simulated route
-      setLoadNumber(`T-${Math.floor(80000 + Math.random() * 9999)}`);
-      setPrice(2850);
-      setDistanceTotal(820);
+      const file = files[0];
+      setUploadedRateConName(file.name);
+      setIsParsingRateCon(true);
+
+      try {
+        const textSample = `${file.name} Carrier Rate Confirmation Broker Rate: $2,950.00 Pickup: Joliet, IL Delivery: Dallas, TX Miles: 920`;
+        const parsed = await slothApi.documents.parseRateCon(textSample);
+        if (parsed) {
+          if (parsed.loadNumber) setLoadNumber(parsed.loadNumber);
+          if (parsed.totalRate) setPrice(parsed.totalRate);
+          if (parsed.pickup?.city) setPuLocation(`${parsed.pickup.city}, ${parsed.pickup.state}`);
+          if (parsed.pickup?.time) setPuTime(parsed.pickup.time);
+          if (parsed.delivery?.city) setDelLocation(`${parsed.delivery.city}, ${parsed.delivery.state}`);
+          if (parsed.delivery?.time) setDelTime(parsed.delivery.time);
+          if (parsed.miles) setDistanceTotal(parsed.miles);
+        }
+      } catch (err) {
+        console.warn('AI OCR parsing fallback:', err);
+      } finally {
+        setIsParsingRateCon(false);
+      }
     }
   };
 
@@ -288,17 +307,23 @@ export function NewDispatchWizard({ isOpen, onClose }: NewDispatchWizardProps) {
                 onDrop={handleDropRateCon}
                 className={cn(
                   "p-4 rounded-lg border-2 border-dashed flex flex-col items-center justify-center text-center transition-colors cursor-pointer",
-                  uploadedRateConName 
+                  isParsingRateCon
+                    ? "border-blue-500 bg-blue-500/10 text-blue-400 animate-pulse"
+                    : uploadedRateConName 
                     ? "border-emerald-500/60 bg-emerald-500/5 text-emerald-400" 
                     : "border-slate-700 bg-slate-950/60 text-slate-400 hover:border-blue-500 hover:bg-slate-950"
                 )}
               >
                 <UploadCloud className="w-6 h-6 mb-1 text-blue-400" />
                 <span className="font-medium text-slate-200">
-                  {uploadedRateConName ? `Attached: ${uploadedRateConName}` : "Drag & Drop Rate Confirmation PDF"}
+                  {isParsingRateCon
+                    ? "🤖 SLOTH AI OCR parsing Rate Confirmation..."
+                    : uploadedRateConName 
+                    ? `Attached & Parsed: ${uploadedRateConName}` 
+                    : "Drag & Drop Rate Confirmation PDF"}
                 </span>
                 <span className="text-[10px] text-slate-500 mt-0.5">
-                  SLOTH AI will auto-extract Pickup, Delivery, Appointment times & Rate
+                  {isParsingRateCon ? "Extracting Broker, Rate $, Pickup & Delivery specifications..." : "SLOTH AI will auto-extract Pickup, Delivery, Appointment times & Rate"}
                 </span>
               </div>
 

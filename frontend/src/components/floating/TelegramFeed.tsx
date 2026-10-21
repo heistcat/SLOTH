@@ -5,6 +5,7 @@ import { LoadRecord, TelegramMessage } from '@/types/logistics';
 import { useTelemetry } from '@/context/TelemetryContext';
 import { cn } from '@/lib/utils';
 import { Send, FileText, Bot, User, CheckCheck, ExternalLink, Image as ImageIcon } from 'lucide-react';
+import { slothApi } from '@/lib/api';
 
 interface TelegramFeedProps {
   load: LoadRecord;
@@ -23,6 +24,39 @@ export function TelegramFeed({ load }: TelegramFeedProps) {
   useEffect(() => {
     scrollToBottom();
   }, [load.telegramMessages]);
+
+  // Load history from backend API
+  useEffect(() => {
+    let isMounted = true;
+    async function loadHistory() {
+      try {
+        const history = await slothApi.telegram.getHistory(load.driver.id);
+        if (history && history.length > 0 && isMounted) {
+          history.forEach((hMsg: any) => {
+            const exists = load.telegramMessages.some(m => m.id === hMsg.id || m.text === hMsg.text);
+            if (!exists) {
+              load.telegramMessages.push({
+                id: hMsg.id,
+                sender: hMsg.sender,
+                text: hMsg.text,
+                timestamp: hMsg.timestamp,
+                attachment: hMsg.mediaUrl ? {
+                  type: 'bol',
+                  url: hMsg.mediaUrl,
+                  title: 'BOL_Document.jpg',
+                } : undefined,
+              });
+            }
+          });
+          scrollToBottom();
+        }
+      } catch {
+        // ignore offline
+      }
+    }
+    loadHistory();
+    return () => { isMounted = false; };
+  }, [load.driver.id]);
 
   const handleSend = (e?: React.FormEvent) => {
     if (e) e.preventDefault();

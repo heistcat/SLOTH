@@ -1,15 +1,17 @@
 'use client';
 
-import React, { createContext, useContext, useState, useEffect, ReactNode, useCallback } from 'react';
+import React, { createContext, useContext, useState, useEffect, ReactNode, useCallback, useRef } from 'react';
 import { LoadRecord, LogisticsStatus, TelegramMessage } from '@/types/logistics';
 import { initialSlothLoads } from '@/lib/mockSlothData';
 import { parseNotesPriority } from '@/lib/flagParser';
+import { slothApi, adaptBackendLoad } from '@/lib/api';
 
 interface TelemetryContextType {
   loads: LoadRecord[];
-  activeInspectors: string[]; // List of load IDs currently open in floating windows
+  activeInspectors: string[];
   minimizedInspectors: Record<string, boolean>;
   isSimulating: boolean;
+  isWsConnected: boolean;
   setIsSimulating: (val: boolean) => void;
   openInspector: (loadId: string) => void;
   closeInspector: (loadId: string) => void;
@@ -18,6 +20,7 @@ interface TelemetryContextType {
   updateLoadField: (loadId: string, field: 'loadNumber' | 'trailer' | 'notes' | 'price' | 'deposit', value: any) => void;
   sendTelegramMessage: (loadId: string, text: string) => void;
   addNewLoad: (newLoad: Omit<LoadRecord, 'id' | 'updatedAt' | 'priorityFlag' | 'telegramMessages'>) => void;
+  refreshLoads: () => Promise<void>;
 }
 
 const TelemetryContext = createContext<TelemetryContextType | undefined>(undefined);
@@ -27,75 +30,188 @@ export function TelemetryProvider({ children }: { children: ReactNode }) {
   const [activeInspectors, setActiveInspectors] = useState<string[]>([]);
   const [minimizedInspectors, setMinimizedInspectors] = useState<Record<string, boolean>>({});
   const [isSimulating, setIsSimulating] = useState<boolean>(true);
+  const [isWsConnected, setIsWsConnected] = useState<boolean>(false);
+  const wsRef = useRef<WebSocket | null>(null);
 
-  // Initialize from localStorage or mock data
-  useEffect(() => {
+  // Fetch loads from Go Backend API
+  const refreshLoads = useCallback(async () => {
+    try {
+      const backendLoads = await slothApi.loads.getAll();
+      if (backendLoads && backendLoads.length > 0) {
+        setLoads(backendLoads);
+        return;
+      }
+    } catch (err) {
+      console.warn('[SLOTH] Backend API not reachable yet, falling back to local dataset', err);
+    }
+    // Fallback to initial mock if API isn't responding yet
     const saved = localStorage.getItem('sloth_loads_data');
     if (saved) {
       try {
         setLoads(JSON.parse(saved));
         return;
-      } catch (e) {
-        console.error('Failed to load saved loads', e);
+      } catch {
+        // ignore
       }
     }
     setLoads(initialSlothLoads);
   }, []);
 
-  // Save to localStorage on changes
-  const saveLoads = useCallback((updated: LoadRecord[]) => {
-    setLoads(updated);
-    try {
-      localStorage.setItem('sloth_loads_data', JSON.stringify(updated));
-    } catch (e) {
-      console.error('Failed to save loads to storage', e);
+  useEffect(() => {
+    refreshLoads();
+  }, [refreshLoads]);
+
+  // Persist loads locally as backup
+  useEffect(() => {
+    if (loads.length > 0) {
+      try {
+        localStorage.setItem('sloth_loads_data', JSON.stringify(loads));
+      } catch {
+        // ignore
+      }
     }
+  }, [loads]);
+
+  // ----------------------------------------------------
+  // WEBSOCKET GATEWAY (/dispatch-live)
+  // ----------------------------------------------------
+  useEffect(() => {
+    let reconnectTimeout: NodeJS.Timeout;
+
+    function connectWebSocket() {
+      if (typeof window === 'undefined') return;
+
+      const protocol = window.location.protocol === 'https:' ? 'wss:' : 'ws:';
+      const wsUrl = `${protocol}//${window.location.host}/dispatch-live?company_id=comp-master-001`;
+
+      try {
+        const ws = new WebSocket(wsUrl);
+        wsRef.current = ws;
+
+        ws.onopen = () => {
+          setIsWsConnected(true);
+          console.log('[SLOTH WS] Connected to live dispatch gateway');
+        };
+
+        ws.onmessage = (event) => {
+          try {
+            const msg = JSON.parse(event.data);
+            handleWsEvent(msg);
+          } catch (e) {
+            // ignore non-json pings
+          }
+        };
+
+        ws.onclose = () => {
+          setIsWsConnected(false);
+          console.log('[SLOTH WS] Gateway disconnected, retrying in 3s...');
+          reconnectTimeout = setTimeout(connectWebSocket, 3000);
+        };
+
+        ws.onerror = () => {
+          ws.close();
+        };
+      } catch {
+        reconnectTimeout = setTimeout(connectWebSocket, 5000);
+      }
+    }
+
+    connectWebSocket();
+
+    return () => {
+      clearTimeout(reconnectTimeout);
+      if (wsRef.current) wsRef.current.close();
+    };
   }, []);
 
-  // Telemetry simulation engine: Decrements miles left on moving trucks, simulates GPS telemetry
-  useEffect(() => {
-    if (!isSimulating) return;
+  // Handle incoming real-time events from Go Backend
+  const handleWsEvent = (event: { type: string; payload: any }) => {
+    switch (event.type) {
+      case 'LOAD_UPDATED': {
+        const updated = adaptBackendLoad(event.payload);
+        setLoads(prev => {
+          const exists = prev.some(l => l.id === updated.id);
+          if (exists) {
+            return prev.map(l => (l.id === updated.id ? updated : l));
+          }
+          return [updated, ...prev];
+        });
+        break;
+      }
 
-    const interval = setInterval(() => {
-      setLoads(prevLoads => {
-        return prevLoads.map(load => {
-          if (load.status === 'TRANSIT' && load.truck.motionStatus === 'MOVING') {
-            const milesDeduction = Math.floor(Math.random() * 2) + 1; // 1-2 miles per tick
-            const newRemaining = Math.max(0, load.distanceRemaining - milesDeduction);
-            const speedFluctuation = Math.min(72, Math.max(58, load.truck.speedMph + (Math.random() > 0.5 ? 1 : -1)));
-
+      case 'TELEMETRY_TICK': {
+        const { unit, speedMph, motionStatus, milesLeft, odometer, lat, lng } = event.payload;
+        setLoads(prev => prev.map(load => {
+          if (load.truck.unit === unit || load.truck.unit === `#${unit}`) {
             return {
               ...load,
-              distanceRemaining: newRemaining,
+              distanceRemaining: milesLeft !== undefined && milesLeft > 0 ? milesLeft : load.distanceRemaining,
               truck: {
                 ...load.truck,
-                speedMph: speedFluctuation,
-                odometer: load.truck.odometer + milesDeduction,
+                speedMph: speedMph ?? load.truck.speedMph,
+                motionStatus: motionStatus ?? load.truck.motionStatus,
+                odometer: odometer ?? load.truck.odometer,
+                coordinates: lat && lng ? { lat, lng } : load.truck.coordinates,
               },
               updatedAt: new Date().toISOString(),
             };
           }
           return load;
-        });
-      });
-    }, 4500);
-
-    return () => clearInterval(interval);
-  }, [isSimulating]);
-
-  // Open a floating inspector window
-  const openInspector = useCallback((loadId: string) => {
-    setActiveInspectors(prev => {
-      if (!prev.includes(loadId)) {
-        return [...prev, loadId];
+        }));
+        break;
       }
-      return prev;
-    });
-    // Un-minimize if it was minimized
+
+      case 'ATTENTION_RAISED': {
+        const { loadId, alert, message } = event.payload;
+        setLoads(prev => prev.map(load => {
+          if (load.id === loadId) {
+            return {
+              ...load,
+              status: 'ATTENTION',
+              priorityFlag: 'EMERGENCY',
+              notes: message || load.notes,
+              updatedAt: new Date().toISOString(),
+            };
+          }
+          return load;
+        }));
+        break;
+      }
+
+      case 'TELEGRAM_MESSAGE_RECEIVED': {
+        const newMsg: TelegramMessage = {
+          id: event.payload.id || `tg-${Date.now()}`,
+          sender: event.payload.sender || 'driver',
+          text: event.payload.text,
+          timestamp: event.payload.timestamp || new Date().toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' }),
+          attachment: event.payload.mediaUrl ? {
+            type: 'bol',
+            url: event.payload.mediaUrl,
+            title: 'Uploaded_Document.jpg',
+          } : undefined,
+        };
+
+        setLoads(prev => prev.map(load => {
+          if (load.id === event.payload.loadId || load.driver.id === event.payload.driverId) {
+            return {
+              ...load,
+              telegramMessages: [...load.telegramMessages, newMsg],
+              updatedAt: new Date().toISOString(),
+            };
+          }
+          return load;
+        }));
+        break;
+      }
+    }
+  };
+
+  // Open / Close / Minimize floating inspector
+  const openInspector = useCallback((loadId: string) => {
+    setActiveInspectors(prev => (prev.includes(loadId) ? prev : [...prev, loadId]));
     setMinimizedInspectors(prev => ({ ...prev, [loadId]: false }));
   }, []);
 
-  // Close a floating inspector window
   const closeInspector = useCallback((loadId: string) => {
     setActiveInspectors(prev => prev.filter(id => id !== loadId));
     setMinimizedInspectors(prev => {
@@ -105,129 +221,109 @@ export function TelemetryProvider({ children }: { children: ReactNode }) {
     });
   }, []);
 
-  // Toggle minimize state
   const toggleMinimizeInspector = useCallback((loadId: string) => {
-    setMinimizedInspectors(prev => ({
-      ...prev,
-      [loadId]: !prev[loadId],
-    }));
+    setMinimizedInspectors(prev => ({ ...prev, [loadId]: !prev[loadId] }));
   }, []);
 
-  // Update load status instantly (Optimistic update)
-  const updateLoadStatus = useCallback((loadId: string, newStatus: LogisticsStatus) => {
-    setLoads(prev => {
-      const updated = prev.map(load => {
-        if (load.id === loadId) {
-          // If status changes to HOME or READY, adjust motion accordingly
-          let newMotion = load.truck.motionStatus;
-          if (newStatus === 'HOME' || newStatus === 'READY') {
-            newMotion = 'PARKED';
-          } else if (newStatus === 'TRANSIT') {
-            newMotion = 'MOVING';
-          }
-          return {
-            ...load,
-            status: newStatus,
-            truck: {
-              ...load.truck,
-              motionStatus: newMotion,
-              speedMph: newMotion === 'MOVING' ? 62 : 0,
-            },
-            updatedAt: new Date().toISOString(),
-          };
-        }
-        return load;
-      });
-      saveLoads(updated);
-      return updated;
-    });
-  }, [saveLoads]);
+  // Update Status Inline (Optimistic + Backend PATCH)
+  const updateLoadStatus = useCallback(async (loadId: string, newStatus: LogisticsStatus) => {
+    // 1. Optimistic UI update
+    setLoads(prev => prev.map(load => {
+      if (load.id === loadId) {
+        let newMotion = load.truck.motionStatus;
+        if (newStatus === 'HOME' || newStatus === 'READY') newMotion = 'PARKED';
+        else if (newStatus === 'TRANSIT') newMotion = 'MOVING';
 
-  // Inline editable cell updater
-  const updateLoadField = useCallback((
-    loadId: string, 
-    field: 'loadNumber' | 'trailer' | 'notes' | 'price' | 'deposit', 
+        return {
+          ...load,
+          status: newStatus,
+          truck: { ...load.truck, motionStatus: newMotion, speedMph: newMotion === 'MOVING' ? 64 : 0 },
+          updatedAt: new Date().toISOString(),
+        };
+      }
+      return load;
+    }));
+
+    // 2. Send to Go backend
+    try {
+      await slothApi.loads.patchInline(loadId, { status: newStatus });
+    } catch (err) {
+      console.warn('[SLOTH API] Status update error:', err);
+    }
+  }, []);
+
+  // Update Field Inline (Optimistic + Backend PATCH)
+  const updateLoadField = useCallback(async (
+    loadId: string,
+    field: 'loadNumber' | 'trailer' | 'notes' | 'price' | 'deposit',
     value: any
   ) => {
-    setLoads(prev => {
-      const updated = prev.map(load => {
-        if (load.id === loadId) {
-          const mod = { ...load, [field]: value };
-          if (field === 'notes') {
-            const parsed = parseNotesPriority(value);
-            mod.priorityFlag = parsed.flag;
-          }
-          mod.updatedAt = new Date().toISOString();
-          return mod;
+    // 1. Optimistic UI update
+    setLoads(prev => prev.map(load => {
+      if (load.id === loadId) {
+        const mod = { ...load, [field]: value };
+        if (field === 'notes') {
+          mod.priorityFlag = parseNotesPriority(value).flag;
         }
-        return load;
-      });
-      saveLoads(updated);
-      return updated;
-    });
-  }, [saveLoads]);
+        mod.updatedAt = new Date().toISOString();
+        return mod;
+      }
+      return load;
+    }));
 
-  // Send a Telegram message from dispatcher to driver
-  const sendTelegramMessage = useCallback((loadId: string, text: string) => {
+    // 2. Send to Go backend
+    try {
+      const patchPayload: Record<string, any> = {};
+      if (field === 'loadNumber') patchPayload.loadNumber = value;
+      else if (field === 'trailer') patchPayload.trailerNumber = value;
+      else if (field === 'notes') patchPayload.notes = value;
+
+      if (Object.keys(patchPayload).length > 0) {
+        await slothApi.loads.patchInline(loadId, patchPayload);
+      }
+    } catch (err) {
+      console.warn('[SLOTH API] Field update error:', err);
+    }
+  }, []);
+
+  // Send Telegram Message to Driver (Optimistic + Backend POST)
+  const sendTelegramMessage = useCallback(async (loadId: string, text: string) => {
     if (!text.trim()) return;
 
-    const newMessage: TelegramMessage = {
+    const targetLoad = loads.find(l => l.id === loadId);
+    const driverId = targetLoad?.driver.id || 'drv-01';
+
+    const localMsg: TelegramMessage = {
       id: `tg-msg-${Date.now()}`,
-      loadId,
       sender: 'dispatcher',
       text: text.trim(),
       timestamp: new Date().toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' }),
     };
 
-    setLoads(prev => {
-      const updated = prev.map(load => {
-        if (load.id === loadId) {
-          return {
-            ...load,
-            telegramMessages: [...load.telegramMessages, newMessage],
-            updatedAt: new Date().toISOString(),
-          };
-        }
-        return load;
-      });
-      saveLoads(updated);
-      return updated;
-    });
-
-    // Simulate an automated bot or driver acknowledgment after 3 seconds
-    setTimeout(() => {
-      setLoads(prev => {
-        const targetLoad = prev.find(l => l.id === loadId);
-        if (!targetLoad) return prev;
-
-        const botReply: TelegramMessage = {
-          id: `tg-msg-bot-${Date.now()}`,
-          loadId,
-          sender: 'driver',
-          text: `Roger that dispatch, received your message.`,
-          timestamp: new Date().toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' }),
+    // 1. Optimistic UI update
+    setLoads(prev => prev.map(l => {
+      if (l.id === loadId) {
+        return {
+          ...l,
+          telegramMessages: [...l.telegramMessages, localMsg],
+          updatedAt: new Date().toISOString(),
         };
+      }
+      return l;
+    }));
 
-        const updated = prev.map(load => {
-          if (load.id === loadId) {
-            return {
-              ...load,
-              telegramMessages: [...load.telegramMessages, botReply],
-              updatedAt: new Date().toISOString(),
-            };
-          }
-          return load;
-        });
-        saveLoads(updated);
-        return updated;
-      });
-    }, 2800);
-  }, [saveLoads]);
+    // 2. Send to Go backend
+    try {
+      await slothApi.telegram.send(driverId, text.trim());
+    } catch (err) {
+      console.warn('[SLOTH API] Failed to send Telegram message:', err);
+    }
+  }, [loads]);
 
-  // Add new load from Wizard
-  const addNewLoad = useCallback((newLoadData: Omit<LoadRecord, 'id' | 'updatedAt' | 'priorityFlag' | 'telegramMessages'>) => {
+  // Add New Load from Wizard (Optimistic + Backend POST)
+  const addNewLoad = useCallback(async (newLoadData: Omit<LoadRecord, 'id' | 'updatedAt' | 'priorityFlag' | 'telegramMessages'>) => {
     const parsedNotes = parseNotesPriority(newLoadData.notes);
-    const newLoad: LoadRecord = {
+    const localLoad: LoadRecord = {
       ...newLoadData,
       id: `load-${Date.now()}`,
       priorityFlag: parsedNotes.flag,
@@ -242,12 +338,49 @@ export function TelemetryProvider({ children }: { children: ReactNode }) {
       ],
     };
 
-    setLoads(prev => {
-      const updated = [newLoad, ...prev];
-      saveLoads(updated);
-      return updated;
-    });
-  }, [saveLoads]);
+    // 1. Optimistic UI update
+    setLoads(prev => [localLoad, ...prev]);
+
+    // 2. Send to Go backend
+    try {
+      const backendPayload = {
+        loadNumber: newLoadData.loadNumber,
+        brokerName: 'Broker Direct',
+        rate: newLoadData.price,
+        status: newLoadData.status,
+        driverId: newLoadData.driver.id,
+        truckId: 'trk-01',
+        trailerNumber: newLoadData.trailer,
+        notes: newLoadData.notes,
+        deadheadMiles: 25,
+        loadedMiles: newLoadData.distanceTotal,
+        stops: [
+          {
+            stopType: 'PICKUP',
+            sequenceOrder: 1,
+            facilityName: 'Shipper Facility',
+            address: newLoadData.puLocation,
+            city: newLoadData.puLocation.split(',')[0] || newLoadData.puLocation,
+            state: newLoadData.puLocation.split(',')[1]?.trim() || 'IL',
+            scheduledTime: newLoadData.puTime,
+          },
+          {
+            stopType: 'DELIVERY',
+            sequenceOrder: 2,
+            facilityName: 'Consignee Receiver',
+            address: newLoadData.delLocation,
+            city: newLoadData.delLocation.split(',')[0] || newLoadData.delLocation,
+            state: newLoadData.delLocation.split(',')[1]?.trim() || 'GA',
+            scheduledTime: newLoadData.delTime,
+          },
+        ],
+      };
+
+      await slothApi.loads.create(backendPayload);
+    } catch (err) {
+      console.warn('[SLOTH API] Failed to create load on backend:', err);
+    }
+  }, []);
 
   return (
     <TelemetryContext.Provider value={{
@@ -255,6 +388,7 @@ export function TelemetryProvider({ children }: { children: ReactNode }) {
       activeInspectors,
       minimizedInspectors,
       isSimulating,
+      isWsConnected,
       setIsSimulating,
       openInspector,
       closeInspector,
@@ -263,6 +397,7 @@ export function TelemetryProvider({ children }: { children: ReactNode }) {
       updateLoadField,
       sendTelegramMessage,
       addNewLoad,
+      refreshLoads,
     }}>
       {children}
     </TelemetryContext.Provider>

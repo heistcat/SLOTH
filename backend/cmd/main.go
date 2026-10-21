@@ -269,6 +269,50 @@ func writeError(w http.ResponseWriter, status int, errMsg string) {
 	writeJSON(w, status, map[string]string{"error": errMsg})
 }
 
+// startAutonomousTelematicsWorker runs in the background simulating live Samsara GPS breadcrumbs
+func startAutonomousTelematicsWorker(s *State, te *services.TelematicsEngine) {
+	ticker := time.NewTicker(3500 * time.Millisecond)
+	for range ticker.C {
+		s.mu.Lock()
+		for _, load := range s.loads {
+			if load.Status == models.StatusTransit && load.Truck != nil {
+				// Decrement miles left
+				if load.MilesLeft > 1 {
+					load.MilesLeft -= 1
+				}
+				load.Truck.Odometer += 1
+
+				// Speed fluctuation between 60 and 70 mph
+				speedChange := float64((time.Now().UnixNano()%7) - 3) * 0.4
+				targetSpeed := 64.5 + speedChange
+				if targetSpeed < 58 {
+					targetSpeed = 58
+				} else if targetSpeed > 71 {
+					targetSpeed = 71
+				}
+				load.Truck.SpeedMph = targetSpeed
+				load.Truck.MotionStatus = models.MotionMoving
+
+				// Move GPS position slightly along route
+				load.Truck.Latitude += 0.0012
+				load.Truck.Longitude -= 0.0008
+
+				// Broadcast live telemetry tick over WebSocket
+				hub.BroadcastEvent("TELEMETRY_TICK", load.CompanyID, map[string]interface{}{
+					"unit":         load.Truck.UnitNumber,
+					"lat":          load.Truck.Latitude,
+					"lng":          load.Truck.Longitude,
+					"speedMph":     load.Truck.SpeedMph,
+					"motionStatus": load.Truck.MotionStatus,
+					"odometer":     load.Truck.Odometer,
+					"milesLeft":    load.MilesLeft,
+				})
+			}
+		}
+		s.mu.Unlock()
+	}
+}
+
 // ----------------------------------------------------
 // MAIN ROUTER & HANDLERS
 // ----------------------------------------------------
@@ -278,6 +322,9 @@ func main() {
 	if port == "" {
 		port = "8085"
 	}
+
+	// Start server-side autonomous telematics GPS worker (ticks every 3.5s)
+	go startAutonomousTelematicsWorker(state, telematicsEngine)
 
 	mux := http.NewServeMux()
 
