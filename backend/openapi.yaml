@@ -1,0 +1,751 @@
+openapi: 3.1.0
+info:
+  title: SLOTH Logistics & Dispatch Operating System API
+  description: >
+    Enterprise-grade API ecosystem and data backbone for US trucking logistics,
+    integrating dispatcher smart web grids, proprietary Samsara telematics,
+    and Telegram driver bots.
+  version: 1.0.0
+servers:
+  - url: http://localhost:8080
+    description: Local development server
+  - url: https://slo-site-production.up.railway.app
+    description: Railway Production server
+
+components:
+  securitySchemes:
+    BearerAuth:
+      type: http
+      scheme: bearer
+      bearerFormat: JWT
+      description: Enter your Bearer JWT access token.
+    ApiKeyAuth:
+      type: apiKey
+      in: header
+      name: X-API-KEY
+      description: API Key for machine-to-machine telematics and external webhooks.
+    HmacAuth:
+      type: apiKey
+      in: header
+      name: X-Sloth-Signature
+      description: HMAC SHA-256 signature for webhook verification.
+
+  schemas:
+    ErrorResponse:
+      type: object
+      required:
+        - error
+        - message
+      properties:
+        error:
+          type: string
+        message:
+          type: string
+
+    LoginRequest:
+      type: object
+      required:
+        - username
+        - password
+      properties:
+        username:
+          type: string
+          example: "0000"
+        password:
+          type: string
+          example: "0000"
+
+    AuthResponse:
+      type: object
+      required:
+        - accessToken
+        - refreshToken
+        - user
+      properties:
+        accessToken:
+          type: string
+        refreshToken:
+          type: string
+        expiresIn:
+          type: integer
+          example: 900
+        user:
+          type: object
+          properties:
+            id:
+              type: string
+            email:
+              type: string
+            fullName:
+              type: string
+            role:
+              type: string
+              enum: [SUPER_ADMIN, COMPANY_ADMIN, DISPATCHER, SAFETY_OFFICER, ACCOUNTING, DRIVER]
+            companyId:
+              type: string
+
+    UserPreferences:
+      type: object
+      properties:
+        theme:
+          type: string
+          enum: [dark, light, system]
+          example: "dark"
+        density:
+          type: string
+          enum: [compact, standard]
+          example: "compact"
+        hiddenColumns:
+          type: array
+          items:
+            type: string
+          example: ["odometer", "cdl"]
+
+    LoadRecordResponse:
+      type: object
+      properties:
+        id:
+          type: string
+        loadNumber:
+          type: string
+          example: "T-89421"
+        brokerName:
+          type: string
+          example: "C.H. Robinson"
+        rate:
+          type: number
+          example: 2450.00
+        status:
+          type: string
+          enum: [READY, DISPATCHED, RESERVED, TRANSIT, ATTENTION, DELIVERED, CANCELLED]
+        priorityFlag:
+          type: string
+          enum: [NONE, NORMAL, WARNING_YELLOW, EMERGENCY_RED]
+        notes:
+          type: string
+          example: "!!! Coolant temperature spike on I-80"
+        trailerNumber:
+          type: string
+          example: "538828"
+        driver:
+          type: object
+          properties:
+            id:
+              type: string
+            fullName:
+              type: string
+            phone:
+              type: string
+            hosDriveRemainingHours:
+              type: number
+              example: 4.8
+        truck:
+          type: object
+          properties:
+            id:
+              type: string
+            unitNumber:
+              type: string
+              example: "#013"
+            motionStatus:
+              type: string
+              enum: [MOVING, PARKED, TERMINAL]
+            speedMph:
+              type: number
+              example: 64.0
+            fuelLevel:
+              type: integer
+              example: 74
+            odometer:
+              type: integer
+              example: 342190
+        distanceRemainingMiles:
+          type: integer
+          example: 245
+        distanceTotalMiles:
+          type: integer
+          example: 780
+        stops:
+          type: array
+          items:
+            $ref: '#/components/schemas/StopResponse'
+
+    StopResponse:
+      type: object
+      properties:
+        id:
+          type: string
+        stopType:
+          type: string
+          enum: [PICKUP, DELIVERY, DROP_YARD]
+        sequenceOrder:
+          type: integer
+        facilityName:
+          type: string
+        city:
+          type: string
+        state:
+          type: string
+        scheduledTime:
+          type: string
+          format: date-time
+        bolDocumentUrl:
+          type: string
+          nullable: true
+
+    CreateLoadRequest:
+      type: object
+      required:
+        - loadNumber
+        - brokerName
+        - rate
+        - driverId
+        - truckId
+        - trailerNumber
+      properties:
+        loadNumber:
+          type: string
+          example: "T-99014"
+        brokerName:
+          type: string
+          example: "TQL Logistics"
+        rate:
+          type: number
+          example: 2850.00
+        driverId:
+          type: string
+        truckId:
+          type: string
+        trailerNumber:
+          type: string
+          example: "538828"
+        notes:
+          type: string
+        stops:
+          type: array
+          items:
+            type: object
+            required:
+              - stopType
+              - sequenceOrder
+              - facilityName
+              - city
+              - state
+            properties:
+              stopType:
+                type: string
+                enum: [PICKUP, DELIVERY]
+              sequenceOrder:
+                type: integer
+              facilityName:
+                type: string
+              address:
+                type: string
+              city:
+                type: string
+              state:
+                type: string
+              scheduledTime:
+                type: string
+
+    InlinePatchLoadRequest:
+      type: object
+      description: Supports partial inline autosave for direct grid cell edits.
+      properties:
+        status:
+          type: string
+          enum: [READY, DISPATCHED, RESERVED, TRANSIT, ATTENTION, DELIVERED, CANCELLED]
+        loadNumber:
+          type: string
+        trailerNumber:
+          type: string
+        notes:
+          type: string
+          description: Notes text. Will automatically trigger flag parser (!!! -> EMERGENCY_RED, !! -> WARNING_YELLOW).
+
+    TelematicsPingRequest:
+      type: object
+      required:
+        - deviceId
+        - lat
+        - lng
+        - speedMph
+        - odometer
+      properties:
+        deviceId:
+          type: string
+          example: "SAM-UNIT-013"
+        lat:
+          type: number
+          example: 39.7684
+        lng:
+          type: number
+          example: -86.1581
+        speedMph:
+          type: number
+          example: 66.5
+        odometer:
+          type: integer
+          example: 342200
+        engineState:
+          type: string
+          enum: [OFF, IDLE, MOVING]
+        hosRemainingDriveSeconds:
+          type: integer
+          example: 17280
+
+    TelegramWebhookRequest:
+      type: object
+      description: Standard Telegram Bot API Update payload
+      properties:
+        update_id:
+          type: integer
+        message:
+          type: object
+        callback_query:
+          type: object
+
+    RateConParseResponse:
+      type: object
+      properties:
+        loadNumber:
+          type: string
+          example: "RC-449102"
+        brokerName:
+          type: string
+          example: "Landstar Ranger"
+        totalRate:
+          type: number
+          example: 3100.00
+        pickup:
+          type: object
+          properties:
+            city:
+              type: string
+              example: "Gary"
+            state:
+              type: string
+              example: "IN"
+            time:
+              type: string
+              example: "08:00 AM"
+        delivery:
+          type: object
+          properties:
+            city:
+              type: string
+              example: "Charlotte"
+            state:
+              type: string
+              example: "NC"
+            time:
+              type: string
+              example: "04:00 PM Tomorrow"
+        miles:
+          type: integer
+          example: 645
+
+paths:
+  # --------------------------------------------------
+  # AUTH & DISPATCHER SETTINGS
+  # --------------------------------------------------
+  /api/v1/auth/login:
+    post:
+      summary: User Login & Token Issuance
+      tags: [Auth]
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/LoginRequest'
+      responses:
+        '200':
+          description: Successful authentication
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/AuthResponse'
+        '401':
+          description: Invalid credentials
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+
+  /api/v1/auth/refresh:
+    post:
+      summary: Refresh Access Token
+      tags: [Auth]
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [refreshToken]
+              properties:
+                refreshToken:
+                  type: string
+      responses:
+        '200':
+          description: New access token issued
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  accessToken:
+                    type: string
+                  expiresIn:
+                    type: integer
+
+  /api/v1/users/me/preferences:
+    get:
+      summary: Get Dispatcher Grid & UI Preferences
+      tags: [Users]
+      security:
+        - BearerAuth: []
+      responses:
+        '200':
+          description: Dispatcher preferences
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/UserPreferences'
+    patch:
+      summary: Update Dispatcher Grid Preferences
+      tags: [Users]
+      security:
+        - BearerAuth: []
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/UserPreferences'
+      responses:
+        '200':
+          description: Preferences updated
+
+  # --------------------------------------------------
+  # LOADS & DISPATCH GRID
+  # --------------------------------------------------
+  /api/v1/loads:
+    get:
+      summary: List Dispatch Loads (Smart Grid Data)
+      tags: [Loads]
+      security:
+        - BearerAuth: []
+      parameters:
+        - name: status
+          in: query
+          schema:
+            type: string
+            enum: [READY, DISPATCHED, RESERVED, TRANSIT, ATTENTION, HOME]
+        - name: flags
+          in: query
+          schema:
+            type: string
+            enum: [warning, emergency, alerts_only]
+        - name: search
+          in: query
+          description: Search driver name, unit #, trailer, notes, city
+          schema:
+            type: string
+        - name: page
+          in: query
+          schema:
+            type: integer
+            default: 1
+        - name: limit
+          in: query
+          schema:
+            type: integer
+            default: 50
+      responses:
+        '200':
+          description: Paginated load records
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  data:
+                    type: array
+                    items:
+                      $ref: '#/components/schemas/LoadRecordResponse'
+                  total:
+                    type: integer
+
+    post:
+      summary: Create New Dispatch Load (Wizard)
+      tags: [Loads]
+      security:
+        - BearerAuth: []
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/CreateLoadRequest'
+      responses:
+        '201':
+          description: Load created and assigned
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/LoadRecordResponse'
+
+  /api/v1/loads/{id}:
+    get:
+      summary: Get Load Details with Stops & Breadcrumbs
+      tags: [Loads]
+      security:
+        - BearerAuth: []
+      parameters:
+        - name: id
+          in: path
+          required: true
+          schema:
+            type: string
+      responses:
+        '200':
+          description: Load details
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/LoadRecordResponse'
+
+    patch:
+      summary: Inline Cell Autosave (Status, Trailer, Load #, Notes with ! flag parser)
+      tags: [Loads]
+      security:
+        - BearerAuth: []
+      parameters:
+        - name: id
+          in: path
+          required: true
+          schema:
+            type: string
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/InlinePatchLoadRequest'
+      responses:
+        '200':
+          description: Load updated; emits WebSocket broadcast to team
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/LoadRecordResponse'
+
+  /api/v1/loads/{id}/assign:
+    post:
+      summary: Assign or Reassign Driver, Unit, and Trailer
+      tags: [Loads]
+      security:
+        - BearerAuth: []
+      parameters:
+        - name: id
+          in: path
+          required: true
+          schema:
+            type: string
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              properties:
+                driverId:
+                  type: string
+                truckId:
+                  type: string
+                trailerNumber:
+                  type: string
+      responses:
+        '200':
+          description: Load assignment updated
+
+  # --------------------------------------------------
+  # TELEMATICS & SAMSARA ENGINE
+  # --------------------------------------------------
+  /api/v1/telematics/ping:
+    post:
+      summary: Ingest GPS/ELD Telemetry Ping (In-House / Samsara Gateway)
+      tags: [Telematics]
+      security:
+        - ApiKeyAuth: []
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/TelematicsPingRequest'
+      responses:
+        '200':
+          description: Ping ingested, geofence evaluated, live socket broadcasted
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  success:
+                    type: boolean
+                  calculatedMilesLeft:
+                    type: integer
+                  geofenceEvent:
+                    type: string
+                    nullable: true
+
+  /api/v1/telematics/trucks/{unit}/live:
+    get:
+      summary: Get Live GPS Telemetry & Breadcrumbs for Unit
+      tags: [Telematics]
+      security:
+        - BearerAuth: []
+      parameters:
+        - name: unit
+          in: path
+          required: true
+          schema:
+            type: string
+            example: "#013"
+      responses:
+        '200':
+          description: Live coordinates, speed, and recent path
+
+  # --------------------------------------------------
+  # TELEGRAM DRIVER HUB
+  # --------------------------------------------------
+  /api/v1/webhooks/telegram:
+    post:
+      summary: Telegram Bot Webhook Endpoint
+      tags: [Telegram]
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/TelegramWebhookRequest'
+      responses:
+        '200':
+          description: Webhook received and processed
+
+  /api/v1/telegram/drivers/{driverId}/send:
+    post:
+      summary: Send Message or CTA to Driver's Telegram
+      tags: [Telegram]
+      security:
+        - BearerAuth: []
+      parameters:
+        - name: driverId
+          in: path
+          required: true
+          schema:
+            type: string
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [text]
+              properties:
+                text:
+                  type: string
+                quickActions:
+                  type: array
+                  items:
+                    type: string
+      responses:
+        '200':
+          description: Message dispatched to Telegram
+
+  /api/v1/telegram/drivers/{driverId}/history:
+    get:
+      summary: Get Driver Telegram Conversation Thread
+      tags: [Telegram]
+      security:
+        - BearerAuth: []
+      parameters:
+        - name: driverId
+          in: path
+          required: true
+          schema:
+            type: string
+      responses:
+        '200':
+          description: Conversation message stream
+
+  # --------------------------------------------------
+  # SMART DOCUMENTS & AI OCR
+  # --------------------------------------------------
+  /api/v1/documents/parse-ratecon:
+    post:
+      summary: AI Rate Confirmation OCR Parser
+      tags: [Documents]
+      security:
+        - BearerAuth: []
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              properties:
+                rawText:
+                  type: string
+                documentUrl:
+                  type: string
+      responses:
+        '200':
+          description: Structured load details parsed from document
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/RateConParseResponse'
+
+  # --------------------------------------------------
+  # PUBLIC TRACKING & EXTERNAL WEBHOOKS
+  # --------------------------------------------------
+  /api/v1/tracking/public/{token}:
+    get:
+      summary: Public Sanitized Broker/Shipper Tracking Link
+      tags: [PublicTracking]
+      parameters:
+        - name: token
+          in: path
+          required: true
+          schema:
+            type: string
+      responses:
+        '200':
+          description: Public tracking status without internal dispatcher notes
+
+  /api/v1/webhooks/subscriptions:
+    post:
+      summary: Register Outbound Webhook Subscription (e.g., load.delivered for QuickBooks)
+      tags: [Webhooks]
+      security:
+        - BearerAuth: []
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [targetUrl, eventType]
+              properties:
+                targetUrl:
+                  type: string
+                eventType:
+                  type: string
+                  enum: [load.created, load.dispatched, load.delivered, attention.raised]
+      responses:
+        '201':
+          description: Webhook registered

@@ -1,0 +1,290 @@
+// SLOTH Dispatch Operating System & Logistics Hub - Prisma Schema
+// Database: PostgreSQL
+
+datasource db {
+  provider = "postgresql"
+  url      = env("DATABASE_URL")
+}
+
+generator client {
+  provider = "prisma-client-js"
+}
+
+// ----------------------------------------------------
+// ENUMS
+// ----------------------------------------------------
+
+enum UserRole {
+  SUPER_ADMIN
+  COMPANY_ADMIN
+  DISPATCHER
+  SAFETY_OFFICER
+  ACCOUNTING
+  DRIVER
+}
+
+enum DriverStatus {
+  ACTIVE
+  INACTIVE
+}
+
+enum TrailerType {
+  DRY_VAN
+  REEFER
+  FLATBED
+  STEP_DECK
+  POWER_ONLY
+}
+
+enum TrailerStatus {
+  AVAILABLE
+  ATTACHED
+  MAINTENANCE
+  OUT_OF_SERVICE
+}
+
+enum LoadStatus {
+  READY
+  DISPATCHED
+  RESERVED
+  TRANSIT
+  ATTENTION
+  DELIVERED
+  CANCELLED
+}
+
+enum PriorityFlag {
+  NONE
+  NORMAL          // !
+  WARNING_YELLOW  // !!
+  EMERGENCY_RED   // !!!
+}
+
+enum StopType {
+  PICKUP
+  DELIVERY
+  DROP_YARD
+}
+
+enum EngineState {
+  OFF
+  IDLE
+  MOVING
+}
+
+enum TelegramDirection {
+  INBOUND
+  OUTBOUND
+}
+
+enum TelegramMessageType {
+  TEXT
+  PHOTO
+  LOCATION
+  BUTTON_ACTION
+}
+
+// ----------------------------------------------------
+// MODELS
+// ----------------------------------------------------
+
+model Company {
+  id         String   @id @default(uuid())
+  name       String
+  mcNumber   String   @map("mc_number")
+  dotNumber  String   @map("dot_number")
+  settings   Json?    @default("{}")
+  createdAt  DateTime @default(now()) @map("created_at")
+  updatedAt  DateTime @updatedAt @map("updated_at")
+
+  // Relationships
+  users      User[]
+  drivers    Driver[]
+  trucks     Truck[]
+  trailers   Trailer[]
+  loads      Load[]
+
+  @@map("companies")
+}
+
+model User {
+  id           String    @id @default(uuid())
+  companyId    String    @map("company_id")
+  email        String    @unique
+  passwordHash String    @map("password_hash")
+  fullName     String    @map("full_name")
+  role         UserRole  @default(DISPATCHER)
+  preferences  Json?     @default("{\"theme\":\"dark\",\"density\":\"compact\",\"hiddenColumns\":[]}")
+  createdAt    DateTime  @default(now()) @map("created_at")
+  updatedAt    DateTime  @updatedAt @map("updated_at")
+
+  // Relationships
+  company      Company   @relation(fields: [companyId], references: [id], onDelete: Cascade)
+  createdLoads Load[]    @relation("LoadCreatedBy")
+
+  @@index([companyId, role])
+  @@map("users")
+}
+
+model Driver {
+  id             String       @id @default(uuid())
+  companyId      String       @map("company_id")
+  fullName       String       @map("full_name")
+  phone          String
+  telegramChatId String?      @unique @map("telegram_chat_id")
+  licenseNumber  String       @map("license_number")
+  isSolo         Boolean      @default(true) @map("is_solo")
+  status         DriverStatus @default(ACTIVE)
+  hometimePref   String?      @map("hometime_pref")
+  createdAt      DateTime     @default(now()) @map("created_at")
+  updatedAt      DateTime     @updatedAt @map("updated_at")
+
+  // Relationships
+  company        Company      @relation(fields: [companyId], references: [id], onDelete: Cascade)
+  trucks         Truck[]      @relation("DefaultDriverTrucks")
+  loads          Load[]
+  telegramLogs   TelegramMessageLog[]
+
+  @@index([companyId, status])
+  @@index([telegramChatId])
+  @@map("drivers")
+}
+
+model Truck {
+  id                 String           @id @default(uuid())
+  companyId          String           @map("company_id")
+  unitNumber         String           @map("unit_number") // e.g., "#013"
+  vin                String           @unique
+  plate              String?
+  defaultDriverId    String?          @map("default_driver_id")
+  telematicsDeviceId String?          @unique @map("telematics_device_id") // Samsara / In-House gateway serial
+  createdAt          DateTime         @default(now()) @map("created_at")
+  updatedAt          DateTime         @updatedAt @map("updated_at")
+
+  // Relationships
+  company            Company          @relation(fields: [companyId], references: [id], onDelete: Cascade)
+  defaultDriver      Driver?          @relation("DefaultDriverTrucks", fields: [defaultDriverId], references: [id], onDelete: SetNull)
+  loads              Load[]
+  telematicsLogs     TelematicsLog[]
+
+  @@unique([companyId, unitNumber])
+  @@index([telematicsDeviceId])
+  @@map("trucks")
+}
+
+model Trailer {
+  id            String        @id @default(uuid())
+  companyId     String        @map("company_id")
+  trailerNumber String        @map("trailer_number") // e.g., "538828", "PO"
+  type          TrailerType   @default(DRY_VAN)
+  status        TrailerStatus @default(AVAILABLE)
+  createdAt     DateTime      @default(now()) @map("created_at")
+  updatedAt     DateTime      @updatedAt @map("updated_at")
+
+  // Relationships
+  company       Company       @relation(fields: [companyId], references: [id], onDelete: Cascade)
+  loads         Load[]
+
+  @@unique([companyId, trailerNumber])
+  @@map("trailers")
+}
+
+model Load {
+  id            String       @id @default(uuid())
+  companyId     String       @map("company_id")
+  loadNumber    String       @map("load_number") // e.g., "T-89421"
+  brokerName    String       @map("broker_name")
+  rate          Decimal      @db.Decimal(10, 2)
+  status        LoadStatus   @default(READY)
+  driverId      String?      @map("driver_id")
+  truckId       String?      @map("truck_id")
+  trailerId     String?      @map("trailer_id")
+  notes         String?      @default("")
+  priorityFlag  PriorityFlag @default(NONE) @map("priority_flag")
+  deadheadMiles Int          @default(0) @map("deadhead_miles")
+  loadedMiles   Int          @default(0) @map("loaded_miles")
+  publicToken   String?      @unique @map("public_token") // Broker tracking URL token
+  createdById   String?      @map("created_by_id")
+  createdAt     DateTime     @default(now()) @map("created_at")
+  updatedAt     DateTime     @updatedAt @map("updated_at")
+
+  // Relationships
+  company       Company      @relation(fields: [companyId], references: [id], onDelete: Cascade)
+  driver        Driver?      @relation(fields: [driverId], references: [id], onDelete: SetNull)
+  truck         Truck?       @relation(fields: [truckId], references: [id], onDelete: SetNull)
+  trailer       Trailer?     @relation(fields: [trailerId], references: [id], onDelete: SetNull)
+  createdBy     User?        @relation("LoadCreatedBy", fields: [createdById], references: [id], onDelete: SetNull)
+  stops         Stop[]
+  telegramLogs  TelegramMessageLog[]
+
+  @@index([companyId, status])
+  @@index([companyId, priorityFlag])
+  @@index([loadNumber])
+  @@index([publicToken])
+  @@map("loads")
+}
+
+model Stop {
+  id              String    @id @default(uuid())
+  loadId          String    @map("load_id")
+  stopType        StopType  @map("stop_type")
+  sequenceOrder   Int       @map("sequence_order")
+  facilityName    String    @map("facility_name")
+  address         String
+  city            String
+  state           String
+  zip             String?
+  latitude        Float?
+  longitude       Float?
+  scheduledTime   DateTime? @map("scheduled_time")
+  actualArrival   DateTime? @map("actual_arrival")
+  actualDeparture DateTime? @map("actual_departure")
+  bolDocumentUrl  String?   @map("bol_document_url")
+  createdAt       DateTime  @default(now()) @map("created_at")
+  updatedAt       DateTime  @updatedAt @map("updated_at")
+
+  // Relationships
+  load            Load      @relation(fields: [loadId], references: [id], onDelete: Cascade)
+
+  @@index([loadId, sequenceOrder])
+  @@map("stops")
+}
+
+model TelematicsLog {
+  id                   BigInt      @id @default(autoincrement())
+  truckId              String      @map("truck_id")
+  latitude             Float
+  longitude            Float
+  speedMph             Float       @map("speed_mph")
+  odometer             Int
+  engineState          EngineState @default(MOVING) @map("engine_state")
+  calculatedMilesLeft  Int?        @map("calculated_miles_left")
+  remainingDriveSeconds Int?       @map("remaining_drive_seconds") // HOS clock
+  pingTimestamp        DateTime    @default(now()) @map("ping_timestamp")
+
+  // Relationships
+  truck                Truck       @relation(fields: [truckId], references: [id], onDelete: Cascade)
+
+  @@index([truckId, pingTimestamp(sort: Desc)])
+  @@map("telematics_logs")
+}
+
+model TelegramMessageLog {
+  id          String              @id @default(uuid())
+  driverId    String              @map("driver_id")
+  loadId      String?             @map("load_id")
+  direction   TelegramDirection
+  messageText String              @map("message_text")
+  mediaUrl    String?             @map("media_url")
+  messageType TelegramMessageType @default(TEXT) @map("message_type")
+  rawPayload  Json?               @default("{}") @map("raw_payload")
+  createdAt   DateTime            @default(now()) @map("created_at")
+
+  // Relationships
+  driver      Driver              @relation(fields: [driverId], references: [id], onDelete: Cascade)
+  load        Load?               @relation(fields: [loadId], references: [id], onDelete: SetNull)
+
+  @@index([driverId, createdAt(sort: Desc)])
+  @@index([loadId])
+  @@map("telegram_message_logs")
+}
